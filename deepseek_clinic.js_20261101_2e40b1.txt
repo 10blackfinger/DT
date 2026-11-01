@@ -1,0 +1,1174 @@
+/*
+  clinic.js — باني المشهد ثلاثي الأبعاد لمنصة "مدرب أطباء الأسنان — Dentist Trainer (DT)"
+  مسؤوليات الملف:
+    - بناء العيادة كاملة (غرفة + كرسي + كابينة + لمبة + أثاث)
+    - بناء مجموعة الأسنان (32 سن) في قوسين علوي وسفلي
+    - بناء موديلات الأدوات ثلاثية الأبعاد
+    - تلوين/إعادة تلوين الأسنان
+    - تحريك سن لفوق ولتحت
+  لا يتعامل هذا الملف مع DOM أو UI أو منطق الحالات إطلاقًا.
+*/
+
+import * as THREE from 'three';
+import { TOOTH_NAMES } from './data.js';
+
+/* ============================================================
+   ثوابت مساعدة
+   ============================================================ */
+
+const TOOTH_CROWN_COLOR = 0xf5f0e6;
+const TOOTH_ROOT_COLOR = 0xe3d9c6;
+const TOOTH_DEFAULT_HIGHLIGHT = 0x22c55e;
+const TOOTH_LIFT_AMOUNT = 0.3;
+const TOOTH_ANIM_DURATION = 500;
+
+/* ============================================================
+   أدوات داخلية مساعدة (غير مصدّرة)
+   ============================================================ */
+
+function createToothSurfaceMaterial(color) {
+  return new THREE.MeshStandardMaterial({
+    color: color,
+    roughness: 0.38,
+    metalness: 0.04
+  });
+}
+
+function buildSingleTooth(toothId, isUpper) {
+  const toothGroup = new THREE.Group();
+  toothGroup.name = 'tooth_' + toothId;
+
+  const crownMaterial = createToothSurfaceMaterial(TOOTH_CROWN_COLOR);
+  const rootMaterial = createToothSurfaceMaterial(TOOTH_ROOT_COLOR);
+
+  const crownMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.065, 0.075, 0.15, 12),
+    crownMaterial
+  );
+  crownMesh.castShadow = true;
+  crownMesh.receiveShadow = true;
+  toothGroup.add(crownMesh);
+
+  const rootMesh = new THREE.Mesh(
+    new THREE.ConeGeometry(0.055, 0.2, 12),
+    rootMaterial
+  );
+  rootMesh.castShadow = true;
+  rootMesh.receiveShadow = true;
+
+  if (isUpper) {
+    rootMesh.rotation.x = 0;
+    rootMesh.position.y = 0.17;
+  } else {
+    rootMesh.rotation.x = Math.PI;
+    rootMesh.position.y = -0.17;
+  }
+  toothGroup.add(rootMesh);
+
+  toothGroup.userData = {
+    type: 'tooth',
+    id: toothId,
+    name: TOOTH_NAMES[toothId] || ('السن ' + toothId)
+  };
+
+  return toothGroup;
+}
+
+function findToothByObject(root, toothId) {
+  let found = null;
+  if (!root || typeof root.traverse !== 'function') return null;
+
+  root.traverse(function (object) {
+    if (found) return;
+    const data = object.userData;
+    if (data && data.type === 'tooth' && String(data.id) === String(toothId)) {
+      found = object;
+    }
+  });
+
+  return found;
+}
+
+function eachToothMesh(toothObject, callback) {
+  toothObject.traverse(function (child) {
+    if (child.isMesh && child.material) {
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (let i = 0; i < materials.length; i++) {
+        callback(child, materials[i]);
+      }
+    }
+  });
+}
+
+/* ============================================================
+   1) buildClinic — بناء العيادة كاملة
+   ============================================================ */
+
+export function buildClinic(scene) {
+  const clinicRoot = new THREE.Group();
+  clinicRoot.name = 'clinicRoot';
+
+  const ROOM_WIDTH = 12;
+  const ROOM_DEPTH = 10;
+  const ROOM_HEIGHT = 3.5;
+
+  /* ---------- المواد ---------- */
+
+  const floorMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf7f7f3,
+    roughness: 0.62,
+    metalness: 0.04,
+    side: THREE.DoubleSide
+  });
+
+  const wallMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfdf3e2,
+    roughness: 0.92,
+    metalness: 0.0,
+    side: THREE.DoubleSide
+  });
+
+  const ceilingMaterial = new THREE.MeshStandardMaterial({
+    color: 0xfafafa,
+    roughness: 1.0,
+    metalness: 0.0,
+    side: THREE.DoubleSide
+  });
+
+  const darkMetalMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2b3440,
+    roughness: 0.45,
+    metalness: 0.65
+  });
+
+  const steelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x9aa6b2,
+    roughness: 0.3,
+    metalness: 0.9
+  });
+
+  const upholsteryMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1f2937,
+    roughness: 0.85,
+    metalness: 0.05
+  });
+
+  const whitePlasticMaterial = new THREE.MeshStandardMaterial({
+    color: 0xf1f4f7,
+    roughness: 0.5,
+    metalness: 0.1
+  });
+
+  const cabinetMaterial = new THREE.MeshStandardMaterial({
+    color: 0xe8ecef,
+    roughness: 0.6,
+    metalness: 0.15
+  });
+
+  const screenFrameMaterial = new THREE.MeshStandardMaterial({
+    color: 0x3a4550,
+    roughness: 0.5,
+    metalness: 0.4
+  });
+
+  const screenMaterial = new THREE.MeshStandardMaterial({
+    color: 0x123a5c,
+    emissive: 0x2f8fd8,
+    emissiveIntensity: 0.85,
+    roughness: 0.25,
+    metalness: 0.1
+  });
+
+  /* ---------- الأرضية ---------- */
+
+  const floorMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROOM_WIDTH, ROOM_DEPTH),
+    floorMaterial
+  );
+  floorMesh.name = 'clinicFloor';
+  floorMesh.rotation.x = -Math.PI / 2;
+  floorMesh.position.set(0, 0, 0);
+  floorMesh.receiveShadow = true;
+  clinicRoot.add(floorMesh);
+
+  /* ---------- الحوائط الأربعة ---------- */
+
+  const backWall = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROOM_WIDTH, ROOM_HEIGHT),
+    wallMaterial
+  );
+  backWall.name = 'wallBack';
+  backWall.position.set(0, ROOM_HEIGHT / 2, -ROOM_DEPTH / 2);
+  backWall.receiveShadow = true;
+  clinicRoot.add(backWall);
+
+  const frontWall = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROOM_WIDTH, ROOM_HEIGHT),
+    wallMaterial
+  );
+  frontWall.name = 'wallFront';
+  frontWall.position.set(0, ROOM_HEIGHT / 2, ROOM_DEPTH / 2);
+  frontWall.rotation.y = Math.PI;
+  frontWall.receiveShadow = true;
+  clinicRoot.add(frontWall);
+
+  const leftWall = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROOM_DEPTH, ROOM_HEIGHT),
+    wallMaterial
+  );
+  leftWall.name = 'wallLeft';
+  leftWall.position.set(-ROOM_WIDTH / 2, ROOM_HEIGHT / 2, 0);
+  leftWall.rotation.y = Math.PI / 2;
+  leftWall.receiveShadow = true;
+  clinicRoot.add(leftWall);
+
+  const rightWall = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROOM_DEPTH, ROOM_HEIGHT),
+    wallMaterial
+  );
+  rightWall.name = 'wallRight';
+  rightWall.position.set(ROOM_WIDTH / 2, ROOM_HEIGHT / 2, 0);
+  rightWall.rotation.y = -Math.PI / 2;
+  rightWall.receiveShadow = true;
+  clinicRoot.add(rightWall);
+
+  /* ---------- السقف ---------- */
+
+  const ceilingMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROOM_WIDTH, ROOM_DEPTH),
+    ceilingMaterial
+  );
+  ceilingMesh.name = 'clinicCeiling';
+  ceilingMesh.rotation.x = Math.PI / 2;
+  ceilingMesh.position.set(0, ROOM_HEIGHT, 0);
+  ceilingMesh.receiveShadow = true;
+  clinicRoot.add(ceilingMesh);
+
+  /* ---------- كرسي الأسنان ---------- */
+
+  const chairGroup = new THREE.Group();
+  chairGroup.name = 'chairGroup';
+  chairGroup.position.set(-2.6, 0, 0.6);
+  chairGroup.rotation.y = Math.PI / 2;
+
+  const chairBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.6, 0.6, 0.4, 24),
+    darkMetalMaterial
+  );
+  chairBase.position.set(0, 0.2, 0);
+  chairBase.castShadow = true;
+  chairBase.receiveShadow = true;
+  chairGroup.add(chairBase);
+
+  const chairColumn = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.25, 0.25, 0.8, 20),
+    steelMaterial
+  );
+  chairColumn.position.set(0, 0.7, 0);
+  chairColumn.castShadow = true;
+  chairColumn.receiveShadow = true;
+  chairGroup.add(chairColumn);
+
+  const chairSeat = new THREE.Mesh(
+    new THREE.BoxGeometry(1.8, 0.25, 0.8),
+    upholsteryMaterial
+  );
+  chairSeat.position.set(0, 1.22, 0);
+  chairSeat.castShadow = true;
+  chairSeat.receiveShadow = true;
+  chairGroup.add(chairSeat);
+
+  const chairBack = new THREE.Mesh(
+    new THREE.BoxGeometry(0.25, 1.0, 0.8),
+    upholsteryMaterial
+  );
+  chairBack.position.set(0.85, 1.62, 0);
+  chairBack.rotation.z = -0.2618;
+  chairBack.castShadow = true;
+  chairBack.receiveShadow = true;
+  chairGroup.add(chairBack);
+
+  const chairHeadrest = new THREE.Mesh(
+    new THREE.BoxGeometry(0.3, 0.5, 0.3),
+    upholsteryMaterial
+  );
+  chairHeadrest.position.set(1.05, 2.12, 0);
+  chairHeadrest.rotation.z = -0.2618;
+  chairHeadrest.castShadow = true;
+  chairHeadrest.receiveShadow = true;
+  chairGroup.add(chairHeadrest);
+
+  const armrestRight = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.08, 0.12),
+    upholsteryMaterial
+  );
+  armrestRight.position.set(-0.1, 1.42, 0.48);
+  armrestRight.castShadow = true;
+  armrestRight.receiveShadow = true;
+  chairGroup.add(armrestRight);
+
+  const armrestLeft = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.08, 0.12),
+    upholsteryMaterial
+  );
+  armrestLeft.position.set(-0.1, 1.42, -0.48);
+  armrestLeft.castShadow = true;
+  armrestLeft.receiveShadow = true;
+  chairGroup.add(armrestLeft);
+
+  const armrestSupportRight = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.035, 0.18, 10),
+    steelMaterial
+  );
+  armrestSupportRight.position.set(0.12, 1.3, 0.48);
+  armrestSupportRight.castShadow = true;
+  chairGroup.add(armrestSupportRight);
+
+  const armrestSupportLeft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.035, 0.18, 10),
+    steelMaterial
+  );
+  armrestSupportLeft.position.set(0.12, 1.3, -0.48);
+  armrestSupportLeft.castShadow = true;
+  chairGroup.add(armrestSupportLeft);
+
+  clinicRoot.add(chairGroup);
+
+  /* ---------- كابينة الأسنان (Dental Unit) ---------- */
+
+  const unitGroup = new THREE.Group();
+  unitGroup.name = 'unitGroup';
+  unitGroup.position.set(-3.9, 0, -1.2);
+
+  const unitBody = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 1.2, 0.4),
+    whitePlasticMaterial
+  );
+  unitBody.position.set(0, 0.6, 0);
+  unitBody.castShadow = true;
+  unitBody.receiveShadow = true;
+  unitGroup.add(unitBody);
+
+  const unitBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.32, 0.36, 0.08, 20),
+    darkMetalMaterial
+  );
+  unitBase.position.set(0, 0.04, 0);
+  unitBase.castShadow = true;
+  unitBase.receiveShadow = true;
+  unitGroup.add(unitBase);
+
+  const unitArmVertical = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 0.8, 14),
+    steelMaterial
+  );
+  unitArmVertical.position.set(0.05, 1.6, 0);
+  unitArmVertical.castShadow = true;
+  unitGroup.add(unitArmVertical);
+
+  const unitElbow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.07, 14, 12),
+    steelMaterial
+  );
+  unitElbow.position.set(0.05, 2.0, 0);
+  unitElbow.castShadow = true;
+  unitGroup.add(unitElbow);
+
+  const unitArmHorizontal = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 0.6, 14),
+    steelMaterial
+  );
+  unitArmHorizontal.position.set(0.35, 2.0, 0);
+  unitArmHorizontal.rotation.z = Math.PI / 2;
+  unitArmHorizontal.castShadow = true;
+  unitGroup.add(unitArmHorizontal);
+
+  const unitTray = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.05, 0.4),
+    steelMaterial
+  );
+  unitTray.position.set(0.75, 1.95, 0);
+  unitTray.castShadow = true;
+  unitTray.receiveShadow = true;
+  unitGroup.add(unitTray);
+
+  const traySlotColors = [0x2f6fb0, 0xc0392b, 0x27ae60, 0xf39c12, 0x8e44ad];
+  for (let slotIndex = 0; slotIndex < 5; slotIndex++) {
+    const slotMaterial = new THREE.MeshStandardMaterial({
+      color: traySlotColors[slotIndex],
+      roughness: 0.5,
+      metalness: 0.35
+    });
+    const slotMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.03, 0.3),
+      slotMaterial
+    );
+    slotMesh.position.set(0.75 - 0.22 + slotIndex * 0.11, 1.99, 0);
+    slotMesh.castShadow = true;
+    slotMesh.receiveShadow = true;
+    unitGroup.add(slotMesh);
+  }
+
+  const unitSpittoon = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2, 0.15, 0.15, 20),
+    whitePlasticMaterial
+  );
+  unitSpittoon.position.set(0.35, 1.15, 0.35);
+  unitSpittoon.castShadow = true;
+  unitSpittoon.receiveShadow = true;
+  unitGroup.add(unitSpittoon);
+
+  const unitSpittoonArm = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.04, 0.04, 0.45, 12),
+    steelMaterial
+  );
+  unitSpittoonArm.position.set(0.22, 0.9, 0.2);
+  unitSpittoonArm.rotation.z = 0.5;
+  unitSpittoonArm.rotation.x = -0.4;
+  unitSpittoonArm.castShadow = true;
+  unitGroup.add(unitSpittoonArm);
+
+  clinicRoot.add(unitGroup);
+
+  /* ---------- لمبة الكرسي ---------- */
+
+  const lightGroup = new THREE.Group();
+  lightGroup.name = 'dentalLightGroup';
+  lightGroup.position.set(-2.6, 3.1, 0.6);
+
+  const lightMountPlate = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.12, 0.12, 0.06, 18),
+    steelMaterial
+  );
+  lightMountPlate.position.set(0, 0, 0);
+  lightMountPlate.castShadow = true;
+  lightGroup.add(lightMountPlate);
+
+  const lightRod = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 0.5, 14),
+    steelMaterial
+  );
+  lightRod.position.set(0, -0.25, 0);
+  lightRod.castShadow = true;
+  lightGroup.add(lightRod);
+
+  const lightHousing = new THREE.Mesh(
+    new THREE.ConeGeometry(0.28, 0.35, 22),
+    whitePlasticMaterial
+  );
+  lightHousing.position.set(0, -0.62, 0);
+  lightHousing.rotation.x = Math.PI;
+  lightHousing.castShadow = true;
+  lightHousing.receiveShadow = true;
+  lightGroup.add(lightHousing);
+
+  const lightBulbFace = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.22, 0.22, 0.02, 22),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xffffff,
+      emissiveIntensity: 1.6,
+      roughness: 0.2,
+      metalness: 0.0
+    })
+  );
+  lightBulbFace.position.set(0, -0.78, 0);
+  lightGroup.add(lightBulbFace);
+
+  clinicRoot.add(lightGroup);
+
+  const lightTargetObject = new THREE.Object3D();
+  lightTargetObject.name = 'dentalLightTarget';
+  lightTargetObject.position.set(-2.6, 1.1, 0.6);
+  clinicRoot.add(lightTargetObject);
+
+  const dentalSpotLight = new THREE.SpotLight(0xffffff, 2.5);
+  dentalSpotLight.name = 'dentalSpotLight';
+  dentalSpotLight.position.set(-2.6, 2.3, 0.6);
+  dentalSpotLight.target = lightTargetObject;
+  dentalSpotLight.angle = 0.6;
+  dentalSpotLight.penumbra = 0.3;
+  dentalSpotLight.decay = 1.0;
+  dentalSpotLight.distance = 12;
+  dentalSpotLight.castShadow = true;
+  dentalSpotLight.shadow.mapSize.width = 1024;
+  dentalSpotLight.shadow.mapSize.height = 1024;
+  dentalSpotLight.shadow.camera.near = 0.5;
+  dentalSpotLight.shadow.camera.far = 15;
+  dentalSpotLight.shadow.bias = -0.0008;
+  clinicRoot.add(dentalSpotLight);
+
+  /* ---------- إضاءة عامة مساعدة ---------- */
+
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.45);
+  ambientLight.name = 'clinicAmbientLight';
+  clinicRoot.add(ambientLight);
+
+  const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x8b8b8b, 0.85);
+  hemisphereLight.name = 'clinicHemisphereLight';
+  hemisphereLight.position.set(0, ROOM_HEIGHT, 0);
+  clinicRoot.add(hemisphereLight);
+
+  const fillDirectional = new THREE.DirectionalLight(0xffffff, 0.7);
+  fillDirectional.name = 'clinicFillLight';
+  fillDirectional.position.set(4, 3.2, 4);
+  fillDirectional.castShadow = false;
+  clinicRoot.add(fillDirectional);
+
+  /* ---------- خزانة الأدوات على الحائط الخلفي ---------- */
+
+  const cabinetGroup = new THREE.Group();
+  cabinetGroup.name = 'cabinetGroup';
+  cabinetGroup.position.set(-3.6, 0, -4.8);
+
+  const cabinetBody = new THREE.Mesh(
+    new THREE.BoxGeometry(2, 1.5, 0.4),
+    cabinetMaterial
+  );
+  cabinetBody.position.set(0, 0.75, 0);
+  cabinetBody.castShadow = true;
+  cabinetBody.receiveShadow = true;
+  cabinetGroup.add(cabinetBody);
+
+  for (let drawerIndex = 0; drawerIndex < 3; drawerIndex++) {
+    const drawerMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(1.85, 0.42, 0.05),
+      new THREE.MeshStandardMaterial({
+        color: 0xdfe4e8,
+        roughness: 0.55,
+        metalness: 0.2
+      })
+    );
+    drawerMesh.position.set(0, 0.3 + drawerIndex * 0.47, 0.22);
+    drawerMesh.castShadow = true;
+    drawerMesh.receiveShadow = true;
+    cabinetGroup.add(drawerMesh);
+
+    const drawerHandle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.02, 0.02, 0.3, 10),
+      steelMaterial
+    );
+    drawerHandle.position.set(0, 0.3 + drawerIndex * 0.47, 0.27);
+    drawerHandle.rotation.z = Math.PI / 2;
+    drawerHandle.castShadow = true;
+    cabinetGroup.add(drawerHandle);
+  }
+
+  clinicRoot.add(cabinetGroup);
+
+  /* ---------- رف الأدوات + 6 مجسمات ملونة ---------- */
+
+  const shelfGroup = new THREE.Group();
+  shelfGroup.name = 'shelfGroup';
+  shelfGroup.position.set(2.0, 0, -4.8);
+
+  const shelfBoard = new THREE.Mesh(
+    new THREE.BoxGeometry(1.5, 0.1, 0.3),
+    cabinetMaterial
+  );
+  shelfBoard.position.set(0, 1.85, 0);
+  shelfBoard.castShadow = true;
+  shelfBoard.receiveShadow = true;
+  shelfGroup.add(shelfBoard);
+
+  const shelfBracketRight = new THREE.Mesh(
+    new THREE.BoxGeometry(0.06, 0.25, 0.25),
+    steelMaterial
+  );
+  shelfBracketRight.position.set(0.6, 1.72, 0);
+  shelfBracketRight.castShadow = true;
+  shelfGroup.add(shelfBracketRight);
+
+  const shelfBracketLeft = new THREE.Mesh(
+    new THREE.BoxGeometry(0.06, 0.25, 0.25),
+    steelMaterial
+  );
+  shelfBracketLeft.position.set(-0.6, 1.72, 0);
+  shelfBracketLeft.castShadow = true;
+  shelfGroup.add(shelfBracketLeft);
+
+  const shelfItemColors = [0xe74c3c, 0x3498db, 0x2ecc71, 0xf1c40f, 0x9b59b6, 0xe67e22];
+  for (let itemIndex = 0; itemIndex < 6; itemIndex++) {
+    const itemMaterial = new THREE.MeshStandardMaterial({
+      color: shelfItemColors[itemIndex],
+      roughness: 0.45,
+      metalness: 0.25
+    });
+    const itemMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.05, 0.18, 12),
+      itemMaterial
+    );
+    itemMesh.position.set(-0.6 + itemIndex * 0.24, 1.99, 0);
+    itemMesh.castShadow = true;
+    itemMesh.receiveShadow = true;
+    shelfGroup.add(itemMesh);
+  }
+
+  clinicRoot.add(shelfGroup);
+
+  /* ---------- شاشة الأشعة X-ray ---------- */
+
+  const xrayGroup = new THREE.Group();
+  xrayGroup.name = 'xrayScreenGroup';
+  xrayGroup.position.set(4.8, 1.9, -4.9);
+
+  const xrayFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(1.1, 0.8, 0.06),
+    screenFrameMaterial
+  );
+  xrayFrame.position.set(0, 0, 0);
+  xrayFrame.castShadow = true;
+  xrayFrame.receiveShadow = true;
+  xrayGroup.add(xrayFrame);
+
+  const xrayScreen = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 0.7, 0.05),
+    screenMaterial
+  );
+  xrayScreen.position.set(0, 0, 0.035);
+  xrayScreen.castShadow = false;
+  xrayScreen.receiveShadow = false;
+  xrayGroup.add(xrayScreen);
+
+  const xrayStand = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 1.5, 12),
+    steelMaterial
+  );
+  xrayStand.position.set(0, -1.15, 0);
+  xrayStand.castShadow = true;
+  xrayGroup.add(xrayStand);
+
+  clinicRoot.add(xrayGroup);
+
+  /* ---------- سلة المهملات ---------- */
+
+  const trashCan = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2, 0.2, 0.5, 18),
+    new THREE.MeshStandardMaterial({
+      color: 0xb9c2c9,
+      roughness: 0.5,
+      metalness: 0.55
+    })
+  );
+  trashCan.name = 'trashCan';
+  trashCan.position.set(1.6, 0.25, -3.4);
+  trashCan.castShadow = true;
+  trashCan.receiveShadow = true;
+  clinicRoot.add(trashCan);
+
+  const trashRim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.2, 0.02, 8, 20),
+    steelMaterial
+  );
+  trashRim.position.set(1.6, 0.5, -3.4);
+  trashRim.rotation.x = Math.PI / 2;
+  trashRim.castShadow = true;
+  clinicRoot.add(trashRim);
+
+  /* ---------- حوض الغسيل ---------- */
+
+  const sinkGroup = new THREE.Group();
+  sinkGroup.name = 'sinkGroup';
+  sinkGroup.position.set(5.55, 0, -2.0);
+
+  const sinkPedestal = new THREE.Mesh(
+    new THREE.BoxGeometry(0.25, 0.85, 0.25),
+    whitePlasticMaterial
+  );
+  sinkPedestal.position.set(0, 0.425, 0);
+  sinkPedestal.castShadow = true;
+  sinkPedestal.receiveShadow = true;
+  sinkGroup.add(sinkPedestal);
+
+  const sinkCounter = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.2, 0.4),
+    whitePlasticMaterial
+  );
+  sinkCounter.position.set(0, 0.95, 0);
+  sinkCounter.castShadow = true;
+  sinkCounter.receiveShadow = true;
+  sinkGroup.add(sinkCounter);
+
+  const sinkBasin = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.15, 0.15, 0.05, 20),
+    new THREE.MeshStandardMaterial({
+      color: 0xd7dde2,
+      roughness: 0.25,
+      metalness: 0.75
+    })
+  );
+  sinkBasin.position.set(0, 1.06, 0);
+  sinkBasin.castShadow = true;
+  sinkBasin.receiveShadow = true;
+  sinkGroup.add(sinkBasin);
+
+  const sinkFaucet = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.02, 0.25, 10),
+    steelMaterial
+  );
+  sinkFaucet.position.set(0, 1.16, -0.14);
+  sinkFaucet.castShadow = true;
+  sinkGroup.add(sinkFaucet);
+
+  clinicRoot.add(sinkGroup);
+
+  /* ---------- كرسي الطبيب ---------- */
+
+  const doctorStoolGroup = new THREE.Group();
+  doctorStoolGroup.name = 'doctorStoolGroup';
+  doctorStoolGroup.position.set(-4.7, 0, 1.9);
+
+  const stoolPole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.15, 0.15, 0.4, 16),
+    steelMaterial
+  );
+  stoolPole.position.set(0, 0.2, 0);
+  stoolPole.castShadow = true;
+  stoolPole.receiveShadow = true;
+  doctorStoolGroup.add(stoolPole);
+
+  const stoolSeat = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.1, 0.5),
+    upholsteryMaterial
+  );
+  stoolSeat.position.set(0, 0.45, 0);
+  stoolSeat.castShadow = true;
+  stoolSeat.receiveShadow = true;
+  doctorStoolGroup.add(stoolSeat);
+
+  clinicRoot.add(doctorStoolGroup);
+
+  /* ---------- إضافة الجذر إلى المشهد ---------- */
+
+  if (scene && scene.add) {
+    scene.add(clinicRoot);
+  }
+
+  return clinicRoot;
+}
+
+/* ============================================================
+   2) createToothSet — 32 سن في قوسين
+   ============================================================ */
+
+export function createToothSet(scene) {
+  const teethGroup = new THREE.Group();
+  teethGroup.name = 'teethGroup';
+
+  const ANGLE_STEP = 1.34 / 8;
+
+  /* ----- القوس العلوي (y = 1.5) ----- */
+  /* الفهرس 0..7  => 11..18 على يمين المريض (x سالب) */
+  /* الفهرس 8..15 => 21..28 على يسار المريض (x موجب)  */
+  const upperIds = [
+    '11', '12', '13', '14', '15', '16', '17', '18',
+    '21', '22', '23', '24', '25', '26', '27', '28'
+  ];
+  const upperY = 1.5;
+  const upperRadiusX = 1.15;
+  const upperRadiusZ = 1.0;
+  const upperZOffset = 0.55;
+
+  for (let upperIndex = 0; upperIndex < upperIds.length; upperIndex++) {
+    const angle = (upperIndex < 8)
+      ? -(upperIndex + 1) * ANGLE_STEP
+      : (upperIndex - 7) * ANGLE_STEP;
+
+    const posX = upperRadiusX * Math.sin(angle);
+    const posZ = upperRadiusZ * Math.cos(angle) - upperZOffset;
+
+    const upperTooth = buildSingleTooth(upperIds[upperIndex], true);
+    upperTooth.position.set(posX, upperY, posZ);
+    teethGroup.add(upperTooth);
+  }
+
+  /* ----- القوس السفلي (y = 1.2) ----- */
+  /* الفهرس 0..7  => 41..48 على يمين المريض (x سالب) */
+  /* الفهرس 8..15 => 31..38 على يسار المريض (x موجب)  */
+  const lowerIds = [
+    '41', '42', '43', '44', '45', '46', '47', '48',
+    '31', '32', '33', '34', '35', '36', '37', '38'
+  ];
+  const lowerY = 1.2;
+  const lowerRadiusX = 1.05;
+  const lowerRadiusZ = 0.92;
+  const lowerZOffset = 0.5;
+
+  for (let lowerIndex = 0; lowerIndex < lowerIds.length; lowerIndex++) {
+    const angle = (lowerIndex < 8)
+      ? -(lowerIndex + 1) * ANGLE_STEP
+      : (lowerIndex - 7) * ANGLE_STEP;
+
+    const posX = lowerRadiusX * Math.sin(angle);
+    const posZ = lowerRadiusZ * Math.cos(angle) - lowerZOffset;
+
+    const lowerTooth = buildSingleTooth(lowerIds[lowerIndex], false);
+    lowerTooth.position.set(posX, lowerY, posZ);
+    teethGroup.add(lowerTooth);
+  }
+
+  teethGroup.position.set(0, 0, 0);
+
+  if (scene && scene.add) {
+    scene.add(teethGroup);
+  }
+
+  return teethGroup;
+}
+
+/* ============================================================
+   3) createTool — موديلات الأدوات
+   ============================================================ */
+
+export function createTool(toolId) {
+  const toolGroup = new THREE.Group();
+  toolGroup.name = 'tool_' + toolId;
+
+  const steelMaterial = new THREE.MeshStandardMaterial({
+    color: 0xc7d2dd,
+    metalness: 0.95,
+    roughness: 0.18
+  });
+
+  const darkSteelMaterial = new THREE.MeshStandardMaterial({
+    color: 0x5b6672,
+    metalness: 0.85,
+    roughness: 0.35
+  });
+
+  const handleMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2f6fb0,
+    metalness: 0.35,
+    roughness: 0.55
+  });
+
+  const mirrorMaterial = new THREE.MeshStandardMaterial({
+    color: 0xe8f0f8,
+    metalness: 1.0,
+    roughness: 0.05
+  });
+
+  const glassMaterial = new THREE.MeshStandardMaterial({
+    color: 0xd8ecff,
+    metalness: 0.1,
+    roughness: 0.1,
+    transparent: true,
+    opacity: 0.45
+  });
+
+  const whiteMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.4,
+    metalness: 0.05
+  });
+
+  const addPart = function (geometry, material, positionArray, rotationArray) {
+    const mesh = new THREE.Mesh(geometry, material);
+    if (positionArray) {
+      mesh.position.set(positionArray[0], positionArray[1], positionArray[2]);
+    }
+    if (rotationArray) {
+      mesh.rotation.set(rotationArray[0], rotationArray[1], rotationArray[2]);
+    }
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    toolGroup.add(mesh);
+    return mesh;
+  };
+
+  switch (toolId) {
+    case 'mirror': {
+      addPart(new THREE.CylinderGeometry(0.013, 0.015, 0.2, 12), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.005, 0.005, 0.05, 8), steelMaterial, [0, 0.12, 0], null);
+      addPart(new THREE.CylinderGeometry(0.035, 0.035, 0.008, 24), mirrorMaterial, [0, 0.15, 0], null);
+      break;
+    }
+
+    case 'probe': {
+      addPart(new THREE.CylinderGeometry(0.012, 0.014, 0.2, 12), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.006, 0.006, 0.05, 10), steelMaterial, [0, 0.12, 0], null);
+      addPart(new THREE.ConeGeometry(0.008, 0.07, 10), steelMaterial, [0, 0.175, 0], null);
+      break;
+    }
+
+    case 'syringe': {
+      addPart(new THREE.CylinderGeometry(0.02, 0.02, 0.06, 14), whiteMaterial, [0, 0.09, 0], null);
+      addPart(new THREE.CylinderGeometry(0.018, 0.018, 0.13, 16), glassMaterial, [0, 0.0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.003, 0.003, 0.09, 8), steelMaterial, [0, 0.15, 0], null);
+      addPart(new THREE.CylinderGeometry(0.012, 0.012, 0.06, 12), handleMaterial, [0, -0.1, 0], null);
+      addPart(new THREE.BoxGeometry(0.05, 0.012, 0.05), handleMaterial, [0, -0.135, 0], null);
+      break;
+    }
+
+    case 'forceps': {
+      addPart(new THREE.BoxGeometry(0.016, 0.16, 0.022), handleMaterial, [-0.025, -0.02, 0], [0, 0, 0.12]);
+      addPart(new THREE.BoxGeometry(0.016, 0.16, 0.022), handleMaterial, [0.025, -0.02, 0], [0, 0, -0.12]);
+      addPart(new THREE.CylinderGeometry(0.02, 0.02, 0.03, 14), steelMaterial, [0, 0.07, 0], [Math.PI / 2, 0, 0]);
+      addPart(new THREE.BoxGeometry(0.014, 0.09, 0.022), steelMaterial, [-0.018, 0.13, 0], [0, 0, -0.1]);
+      addPart(new THREE.BoxGeometry(0.014, 0.09, 0.022), steelMaterial, [0.018, 0.13, 0], [0, 0, 0.1]);
+      break;
+    }
+
+    case 'elevator': {
+      addPart(new THREE.CylinderGeometry(0.014, 0.016, 0.18, 12), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.007, 0.007, 0.05, 10), steelMaterial, [0, 0.11, 0], null);
+      addPart(new THREE.ConeGeometry(0.012, 0.09, 10), steelMaterial, [0.012, 0.16, 0], [0, 0, -0.4]);
+      break;
+    }
+
+    case 'handpiece': {
+      addPart(new THREE.CylinderGeometry(0.026, 0.015, 0.16, 16), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.012, 0.012, 0.1, 12), steelMaterial, [0, 0.12, 0], null);
+      addPart(new THREE.CylinderGeometry(0.022, 0.022, 0.05, 14), darkSteelMaterial, [0.03, 0.15, 0], [0, 0, Math.PI / 2]);
+      addPart(new THREE.CylinderGeometry(0.004, 0.004, 0.05, 8), steelMaterial, [0.065, 0.13, 0], [0, 0, Math.PI / 2.6]);
+      break;
+    }
+
+    case 'brush': {
+      addPart(new THREE.CylinderGeometry(0.012, 0.014, 0.18, 12), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.008, 0.008, 0.06, 10), steelMaterial, [0, 0.11, 0], null);
+      addPart(new THREE.CylinderGeometry(0.022, 0.022, 0.045, 14), whiteMaterial, [0, 0.15, 0], [0, 0, Math.PI / 2]);
+      break;
+    }
+
+    case 'curing': {
+      addPart(new THREE.CylinderGeometry(0.018, 0.02, 0.18, 14), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.01, 0.01, 0.06, 10), darkSteelMaterial, [0, 0.11, 0], null);
+      addPart(
+        new THREE.SphereGeometry(0.028, 16, 12),
+        new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          emissive: 0x66aaff,
+          emissiveIntensity: 1.8,
+          roughness: 0.2,
+          metalness: 0.0
+        }),
+        [0, 0.155, 0],
+        null
+      );
+      break;
+    }
+
+    case 'scaler': {
+      addPart(new THREE.CylinderGeometry(0.013, 0.015, 0.2, 12), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.006, 0.006, 0.05, 10), steelMaterial, [0, 0.12, 0], null);
+      addPart(new THREE.ConeGeometry(0.009, 0.08, 10), steelMaterial, [0.02, 0.16, 0], [0, 0, -0.6]);
+      break;
+    }
+
+    case 'suction': {
+      addPart(new THREE.CylinderGeometry(0.014, 0.016, 0.18, 12), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.018, 0.026, 0.09, 16, 1, true), darkSteelMaterial, [0, 0.13, 0], [0.3, 0, 0]);
+      break;
+    }
+
+    case 'explorer': {
+      addPart(new THREE.CylinderGeometry(0.012, 0.014, 0.19, 12), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.005, 0.005, 0.05, 8), steelMaterial, [0, 0.11, 0], null);
+      addPart(new THREE.ConeGeometry(0.007, 0.08, 8), steelMaterial, [0.018, 0.165, 0], [0, 0, -0.7]);
+      break;
+    }
+
+    case 'excavator': {
+      addPart(new THREE.CylinderGeometry(0.013, 0.015, 0.19, 12), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.007, 0.007, 0.06, 10), steelMaterial, [0, 0.12, 0], null);
+      addPart(new THREE.SphereGeometry(0.017, 12, 10), steelMaterial, [0.012, 0.155, 0], null);
+      break;
+    }
+
+    case 'matrix': {
+      addPart(new THREE.BoxGeometry(0.1, 0.12, 0.006), steelMaterial, [0, 0.08, 0], null);
+      addPart(new THREE.CylinderGeometry(0.008, 0.008, 0.14, 10), handleMaterial, [0, -0.06, 0], null);
+      break;
+    }
+
+    case 'wedge': {
+      addPart(new THREE.ConeGeometry(0.03, 0.08, 3), new THREE.MeshStandardMaterial({
+        color: 0xe6c98a,
+        roughness: 0.85,
+        metalness: 0.0
+      }), [0, 0.02, 0], [0, Math.PI / 6, 0]);
+      addPart(new THREE.CylinderGeometry(0.006, 0.006, 0.14, 8), handleMaterial, [0, -0.09, 0], null);
+      break;
+    }
+
+    case 'suture': {
+      addPart(new THREE.CylinderGeometry(0.01, 0.012, 0.18, 12), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.003, 0.003, 0.09, 8), steelMaterial, [0.01, 0.13, 0], [0, 0, -0.5]);
+      addPart(new THREE.TorusGeometry(0.025, 0.004, 8, 20), new THREE.MeshStandardMaterial({
+        color: 0x2c3e50,
+        roughness: 0.8,
+        metalness: 0.05
+      }), [0.04, 0.16, 0], [Math.PI / 2, 0, 0]);
+      break;
+    }
+
+    case 'composite': {
+      addPart(new THREE.CylinderGeometry(0.022, 0.022, 0.16, 14), whiteMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.01, 0.014, 0.06, 12), steelMaterial, [0, 0.11, 0], null);
+      addPart(new THREE.ConeGeometry(0.008, 0.05, 8), steelMaterial, [0, 0.155, 0], null);
+      break;
+    }
+
+    case 'lightcure': {
+      addPart(new THREE.CylinderGeometry(0.018, 0.022, 0.18, 14), handleMaterial, [0, 0, 0], null);
+      addPart(new THREE.CylinderGeometry(0.026, 0.026, 0.05, 16), darkSteelMaterial, [0, 0.115, 0], null);
+      addPart(
+        new THREE.SphereGeometry(0.026, 16, 12),
+        new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          emissive: 0x66ccff,
+          emissiveIntensity: 2.0,
+          roughness: 0.15,
+          metalness: 0.0
+        }),
+        [0, 0.16, 0],
+        null
+      );
+      break;
+    }
+
+    case 'articulating': {
+      addPart(new THREE.BoxGeometry(0.12, 0.002, 0.09), new THREE.MeshStandardMaterial({
+        color: 0x2b5fa8,
+        roughness: 0.9,
+        metalness: 0.0,
+        side: THREE.DoubleSide
+      }), [0, 0.05, 0], null);
+      addPart(new THREE.BoxGeometry(0.12, 0.002, 0.09), new THREE.MeshStandardMaterial({
+        color: 0xa83232,
+        roughness: 0.9,
+        metalness: 0.0,
+        side: THREE.DoubleSide
+      }), [0, 0.045, 0], null);
+      break;
+    }
+
+    default: {
+      addPart(
+        new THREE.BoxGeometry(0.05, 0.05, 0.05),
+        new THREE.MeshStandardMaterial({
+          color: 0x8899aa,
+          roughness: 0.5,
+          metalness: 0.4
+        }),
+        [0, 0, 0],
+        null
+      );
+      break;
+    }
+  }
+
+  return toolGroup;
+}
+
+/* ============================================================
+   4) highlightTooth
+   ============================================================ */
+
+export function highlightTooth(scene, toothId, color) {
+  const highlightColor = (color === undefined || color === null)
+    ? TOOTH_DEFAULT_HIGHLIGHT
+    : color;
+
+  const targetTooth = findToothByObject(scene, toothId);
+  if (!targetTooth) return;
+
+  const threeColor = new THREE.Color(highlightColor);
+  const hexColor = threeColor.getHex();
+
+  eachToothMesh(targetTooth, function (mesh, material) {
+    if (!material || !material.color) return;
+
+    if (mesh.userData.originalColor === undefined) {
+      mesh.userData.originalColor = material.color.getHex();
+    }
+
+    material.color.setHex(hexColor);
+
+    if (material.emissive) {
+      material.emissive.setHex(hexColor);
+      material.emissiveIntensity = 0.45;
+    }
+  });
+
+  targetTooth.userData.highlighted = true;
+  targetTooth.userData.highlightColor = hexColor;
+}
+
+/* ============================================================
+   5) resetTeethHighlights
+   ============================================================ */
+
+export function resetTeethHighlights(scene) {
+  if (!scene || typeof scene.traverse !== 'function') return;
+
+  scene.traverse(function (object) {
+    const data = object.userData;
+    if (!data || data.type !== 'tooth') return;
+
+    data.highlighted = false;
+
+    eachToothMesh(object, function (mesh, material) {
+      if (!material) return;
+
+      if (mesh.userData.originalColor !== undefined && material.color) {
+        material.color.setHex(mesh.userData.originalColor);
+      }
+
+      if (material.emissive) {
+        material.emissive.setHex(0x000000);
+        material.emissiveIntensity = 0;
+      }
+    });
+  });
+}
+
+/* ============================================================
+   6) animateTooth
+   ============================================================ */
+
+export function animateTooth(tooth, direction) {
+  if (!tooth || !tooth.position) return;
+
+  if (tooth.userData.originalY === undefined) {
+    tooth.userData.originalY = tooth.position.y;
+  }
+
+  const originY = tooth.userData.originalY;
+  const startY = tooth.position.y;
+  const targetY = (direction === 'down') ? originY : originY + TOOTH_LIFT_AMOUNT;
+
+  const animationId = (tooth.userData.animationId || 0) + 1;
+  tooth.userData.animationId = animationId;
+
+  const nowFunction = (typeof performance !== 'undefined' && performance.now)
+    ? function () { return performance.now(); }
+    : function () { return Date.now(); };
+
+  const startTime = nowFunction();
+
+  const step = function () {
+    if (tooth.userData.animationId !== animationId) return;
+
+    const elapsed = nowFunction() - startTime;
+    let progress = elapsed / TOOTH_ANIM_DURATION;
+
+    if (progress > 1) progress = 1;
+    if (progress < 0) progress = 0;
+
+    const eased = (progress < 0.5)
+      ? (2 * progress * progress)
+      : (-1 + (4 - 2 * progress) * progress);
+
+    tooth.position.y = startY + (targetY - startY) * eased;
+
+    if (progress < 1) {
+      requestAnimationFrame(step);
+    } else {
+      tooth.position.y = targetY;
+    }
+  };
+
+  requestAnimationFrame(step);
+}

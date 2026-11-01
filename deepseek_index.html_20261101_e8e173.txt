@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>مدرب أطباء الأسنان — DT</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css">
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+
+  <div id="loading-screen">
+    <div class="loading-logo">DT</div>
+    <div class="loading-text">جاري تحميل بيئة المحاكاة...</div>
+    <div class="loading-bar-container"><div id="loading-bar"></div></div>
+  </div>
+
+  <canvas id="scene"></canvas>
+
+  <header id="top-bar">
+    <div class="brand">Dentist Trainer — DT</div>
+    <div class="case-info">
+      <span id="case-title">اختر حالة للبدء</span>
+      <span id="step-counter">الخطوة 0 من 0</span>
+    </div>
+    <div class="top-actions">
+      <button id="help-btn">؟</button>
+      <button id="reset-btn">إعادة</button>
+      <button id="finish-btn">إنهاء</button>
+    </div>
+  </header>
+
+  <aside id="sidebar">
+    <section>
+      <h3>الحالات المتاحة</h3>
+      <div id="cases-list"></div>
+    </section>
+    <section>
+      <h3>صندوق الأدوات</h3>
+      <div id="tools-grid"></div>
+    </section>
+    <section>
+      <h3>خطوات الحالة</h3>
+      <div id="case-steps"></div>
+    </section>
+  </aside>
+
+  <footer id="bottom-bar">
+    <div id="feedback-area">اختر حالة ثم أداة ثم اضغط على السن المناسب.</div>
+    <button id="retry-step-btn">إعادة الخطوة</button>
+  </footer>
+
+  <div id="error-modal" class="modal">
+    <div class="modal-content">
+      <h2 id="error-title">خطأ</h2>
+      <p id="error-detail"></p>
+      <div class="correct-block">
+        <h4>الشرح الصحيح:</h4>
+        <p id="error-correct"></p>
+      </div>
+      <button id="error-close-btn" class="primary">فهمت</button>
+    </div>
+  </div>
+
+  <div id="report-modal" class="modal">
+    <div class="modal-content">
+      <h2>تقرير الأداء</h2>
+      <div class="report-grid">
+        <div class="report-item"><span>النتيجة</span><strong id="report-score">0</strong></div>
+        <div class="report-item"><span>الزمن</span><strong id="report-time">0 ث</strong></div>
+        <div class="report-item"><span>الأخطاء</span><strong id="report-errors">0</strong></div>
+      </div>
+      <div id="report-tips"></div>
+      <div class="modal-actions">
+        <button id="report-retry-btn">إعادة الحالة</button>
+        <button id="report-newcase-btn" class="primary">حالة جديدة</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="help-modal" class="modal">
+    <div class="modal-content">
+      <h2>كيفية الاستخدام</h2>
+      <ol>
+        <li>اختر حالة من قائمة الحالات.</li>
+        <li>اقرأ التعليمات في القائمة الجانبية.</li>
+        <li>اختر الأداة المناسبة من صندوق الأدوات.</li>
+        <li>اضغط على السن الصحيح في مساحة الـ 3D.</li>
+        <li>لو أخطأت، هيظهرلك شرح التصحيح.</li>
+        <li>أكمل كل الخطوات لعرض التقرير النهائي.</li>
+      </ol>
+      <button id="help-close-btn" class="primary">تمام</button>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+
+  <script type="module" src="main.js"></script>
+
+</body>
+</html>
